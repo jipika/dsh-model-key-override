@@ -1,0 +1,25 @@
+{
+  "name": "dsh-model-key-override",
+  "version": "0.2.0",
+  "private": true,
+  "description": "给单个模型配「专属 key」：有则用它、无则走供应商那把。host 半边在进程内按 body.model 换授权头；client 半边在官方模型卡片里注入输入框。",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
