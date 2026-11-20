@@ -45,6 +45,14 @@
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  hostMatches,
+  invert,
+  rebuildRequest,
+  renameRequestBody,
+  resolveWireRename,
+  restoreResponse,
+} from "./wire-rename.js";
 
 /** Stable Cordis plugin name. */
 export const name = "dsh-model-key-override";
@@ -118,6 +126,8 @@ export function resolveConfig(rawConfig) {
   cfg.allowHosts = Array.isArray(cfg.allowHosts) ? cfg.allowHosts.filter(p => typeof p === "string" && p.length > 0) : [];
   cfg.cacheMs = Number.isFinite(cfg.cacheMs) && cfg.cacheMs >= 0 ? cfg.cacheMs : DEFAULTS.cacheMs;
   cfg.debug = cfg.debug === true;
+  // 线上工具名改名（见 wire-rename.js）：hosts 为空即关闭。
+  cfg.wireRename = resolveWireRename(cfg.wireRename);
   return cfg;
 }
 
@@ -354,7 +364,38 @@ export function installInterceptor({ ctx, config, endpoints, owners }) {
     return value;
   };
 
+  let wireLogged = false;
+  /** 命中改名配置时返回改写后的 `{ input, init, reverse }`，否则 `undefined`。 */
+  const prepareWire = async (input, init) => {
+    const wire = config.wireRename;
+    if (!wire?.enabled) return undefined;
+    const url = typeof input === "string" ? input : input?.url ?? String(input);
+    if (!hostMatches(url, wire.hosts)) return undefined;
+    const body = await readBodyText(input, init);
+    const renamed = renameRequestBody(body.text, wire.names);
+    if (renamed === undefined) return undefined;
+    const rebuilt = rebuildRequest(input, init, renamed.text);
+    if (rebuilt === undefined) return undefined;
+    if (!wireLogged) {
+      wireLogged = true;
+      diag("wire-rename-active", { url: originPath(url), names: renamed.forward });
+    }
+    return { ...rebuilt, reverse: invert(renamed.forward) };
+  };
+
   globalThis.fetch = async (input, init) => {
+    let wire;
+    try {
+      wire = await prepareWire(input, init);
+    } catch (e) {
+      diag("wire-rename-error", { msg: String(e?.message ?? e).slice(0, 160) });
+      wire = undefined;
+    }
+    if (wire === undefined) return route(input, init);
+    return restoreResponse(await route(wire.input, wire.init), wire.reverse);
+  };
+
+  const route = async (input, init) => {
     try {
       const url = typeof input === "string" ? input : input?.url ?? String(input);
       if (!/^https?:/.test(url)) return originalFetch(input, init);
@@ -457,5 +498,10 @@ export function apply(ctx, rawConfig) {
   });
   // 不在 apply 时预热端点表：装配顺序上插件常早于 llm-pi-ai，预热只会读到空表。
   // 真实端点表由首个请求惰性建立，并由拦截器记一条 endpoints-ready 便于排查。
-  diag("installed", { refPrefix: config.refPrefix, providers: null, note: "lazy" });
+  diag("installed", {
+    refPrefix: config.refPrefix,
+    providers: null,
+    note: "lazy",
+    wireRename: config.wireRename.enabled ? { hosts: config.wireRename.hosts, names: config.wireRename.names } : false,
+  });
 }
